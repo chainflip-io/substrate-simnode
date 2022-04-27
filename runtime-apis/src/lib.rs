@@ -29,6 +29,6 @@ sp_api::decl_runtime_apis! {
 		/// Attempt to create signed transaction
 		/// Runtime implementation is free to construct the payload to sign in any way it wants.
 		/// Returns a scale encoded extrinsic Should panic if signed transaction cannot be created.
-		fn create_transaction(account: AccountId, call: Call) -> Vec<u8>;
+		fn create_transaction(call: Call, account: AccountId) -> Vec<u8>;
 	}
 }
