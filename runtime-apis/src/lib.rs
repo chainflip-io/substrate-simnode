@@ -21,7 +21,7 @@ sp_api::decl_runtime_apis! {
 	/// Create transaction.
 	/// This trait is meant to be implemented by the runtime and is responsible for constructing
 	/// a transaction to be included in the block.
-	pub trait CreateTransactionApi<Call, AccountId>
+	pub trait CreateTransactionApi<AccountId, Call>
 		where
 			Call: Codec,
 			AccountId: Codec,
