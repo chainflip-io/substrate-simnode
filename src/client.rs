@@ -17,8 +17,7 @@
 //! Utilities for creating the neccessary client subsystems.
 
 use crate::{
-	ChainInfo, FullBackendFor, FullClientFor, Node, ParachainInherentSproofProvider,
-	SharedParachainInherentProvider, SimnodeCli,
+	ChainInfo, FullBackendFor, FullClientFor, Node, SimnodeCli,
 };
 use futures::channel::mpsc;
 use manual_seal::{
@@ -27,7 +26,6 @@ use manual_seal::{
 	rpc::{ManualSeal, ManualSealApi},
 	run_manual_seal, ConsensusDataProvider, ManualSealParams,
 };
-use parachain_inherent::ParachainInherentData;
 use sc_cli::{build_runtime, SubstrateCli};
 use sc_client_api::backend::Backend;
 use sc_executor::NativeElseWasmExecutor;
@@ -51,7 +49,7 @@ use std::{
 	error::Error,
 	future::Future,
 	str::FromStr,
-	sync::{Arc, Mutex},
+	sync::{Arc},
 };
 
 /// Arguments to pass to the `create_rpc_io_handler`
@@ -77,7 +75,6 @@ where
 /// Creates all the client parts you need for [`Node`](crate::node::Node)
 pub fn build_node_subsystems<T, I>(
 	config: Configuration,
-	is_parachain: bool,
 	block_import_provider: I,
 ) -> Result<Node<T>, sc_service::Error>
 where
@@ -106,7 +103,6 @@ where
 		Arc<FullClientFor<T>>,
 		sc_consensus::LongestChain<TFullBackend<T::Block>, T::Block>,
 		&KeystoreContainer,
-		Option<SharedParachainInherentProvider<T>>,
 	) -> Result<
 		(
 			T::BlockImport,
@@ -142,17 +138,11 @@ where
 
 	let select_chain = sc_consensus::LongestChain::new(backend.clone());
 
-	let parachain_inherent_provider = if is_parachain {
-		Some(Arc::new(Mutex::new(ParachainInherentSproofProvider::new(client.clone()))))
-	} else {
-		None
-	};
 	let (block_import, consensus_data_provider, create_inherent_data_providers) =
 		block_import_provider(
 			client.clone(),
 			select_chain.clone(),
 			&keystore,
-			parachain_inherent_provider.clone(),
 		)?;
 	let import_queue =
 		import_queue(Box::new(block_import.clone()), &task_manager.spawn_essential_handle(), None);
@@ -258,13 +248,12 @@ where
 		initial_block_number: client.info().best_number,
 		client,
 		manual_seal_command_sink: command_sink,
-		parachain_inherent_provider,
 	};
 
 	Ok(node)
 }
 
-/// Set up and run simnode for a standalone runtime.
+/// Set up and run simnode for a standalone manual-seal runtime.
 pub fn standalone_node<C, B, F, Fut>(build_subsystems: B, callback: F) -> Result<(), Box<dyn Error>>
 where
 	C: ChainInfo + 'static,
@@ -294,7 +283,6 @@ where
 		Arc<FullClientFor<C>>,
 		sc_consensus::LongestChain<TFullBackend<C::Block>, C::Block>,
 		&KeystoreContainer,
-		Option<SharedParachainInherentProvider<C>>,
 	) -> Result<
 		(
 			C::BlockImport,
@@ -320,7 +308,6 @@ where
 		Arc<FullClientFor<C>>,
 		sc_consensus::LongestChain<TFullBackend<C::Block>, C::Block>,
 		&KeystoreContainer,
-		Option<SharedParachainInherentProvider<C>>,
 	) -> Result<
 		(
 			C::BlockImport,
@@ -355,7 +342,7 @@ where
 	let config = cli.create_configuration(cli_config, tokio_runtime.handle().clone())?;
 	sc_cli::print_node_infos::<<<C as ChainInfo>::Cli as SimnodeCli>::SubstrateCli>(&config);
 
-	let node = build_node_subsystems::<C, _>(config, false, build_subsystems)?;
+	let node = build_node_subsystems::<C, _>(config, build_subsystems)?;
 
 	// hand off node.
 	tokio_runtime.block_on(callback(node))?;
@@ -363,15 +350,14 @@ where
 	Ok(())
 }
 
-/// Set up and run simnode for a parachain runtime.
-pub fn parachain_node<C, F, Fut>(callback: F) -> Result<(), Box<dyn Error>>
+/// Set up and run simnode for an aura-based runtime.
+pub fn aura_node<C, F, Fut>(callback: F) -> Result<(), Box<dyn Error>>
 where
 	C: ChainInfo<
 			BlockImport = Arc<FullClientFor<C>>,
 			InherentDataProviders = (
 				SlotTimestampProvider,
 				sp_consensus_aura::inherents::InherentDataProvider,
-				ParachainInherentData,
 			),
 		> + 'static,
 	<C::RuntimeApi as ConstructRuntimeApi<C::Block, FullClientFor<C>>>::RuntimeApi:
@@ -412,12 +398,10 @@ where
 
 	let node = build_node_subsystems::<C, _>(
 		config,
-		true,
-		|client, _sc, _keystore, parachain_inherent| {
+		|client, _sc, _keystore| {
 			let cloned_client = client.clone();
 			let create_inherent_data_providers = Box::new(move |_, _| {
 				let client = cloned_client.clone();
-				let parachain_sproof = parachain_inherent.clone().unwrap();
 				async move {
 					let timestamp = SlotTimestampProvider::new_aura(client.clone())
 						.map_err(|err| format!("{:?}", err))?;
@@ -426,9 +410,7 @@ where
 						timestamp.slot().into(),
 					);
 
-					let parachain_system =
-						parachain_sproof.lock().unwrap().create_inherent(timestamp.slot().into());
-					Ok((timestamp, _aura, parachain_system))
+					Ok((timestamp, _aura))
 				}
 			});
 			let aura_provider = AuraConsensusDataProvider::new(client.clone());

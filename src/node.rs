@@ -15,19 +15,15 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use codec::Encode;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use crate::{
-	sproof::ParachainInherentSproofProvider, ChainInfo, FullClientFor, TransactionPoolFor,
-	UncheckedExtrinsicFor,
-};
+use crate::{ChainInfo, FullClientFor, TransactionPoolFor, UncheckedExtrinsicFor};
 use futures::{
 	channel::{mpsc, oneshot},
 	FutureExt, SinkExt,
 };
 use jsonrpc_core::MetaIoHandler;
 use manual_seal::EngineCommand;
-use polkadot_primitives::v1::UpgradeGoAhead;
 use sc_client_api::{backend::Backend, CallExecutor, ExecutorProvider};
 use sc_executor::NativeElseWasmExecutor;
 use sc_service::{TFullBackend, TFullCallExecutor, TFullClient, TaskManager};
@@ -42,11 +38,6 @@ use sp_runtime::{
 	MultiSignature, OpaqueExtrinsic,
 };
 use sp_state_machine::Ext;
-use sproof_builder::RelayStateSproofBuilder;
-
-/// Shared instance of [`ParachainInherentSproofProvider`]
-pub type SharedParachainInherentProvider<T> =
-	Arc<Mutex<ParachainInherentSproofProvider<<T as ChainInfo>::Block, FullClientFor<T>>>>;
 
 /// Node Error type
 #[derive(Debug)]
@@ -84,8 +75,6 @@ pub struct Node<T: ChainInfo> {
 	pub(crate) backend: Arc<TFullBackend<T::Block>>,
 	/// Block number at initialization of this Node.
 	pub(crate) initial_block_number: NumberFor<T::Block>,
-	/// a reference to the [`ParachainInherentSproofProvider`] for setting runtime upgrade signals
-	pub(crate) parachain_inherent_provider: Option<SharedParachainInherentProvider<T>>,
 }
 
 type EventRecord<T> = frame_system::EventRecord<
@@ -195,45 +184,14 @@ where
 		self.with_state(id, || frame_system::Pallet::<T::Runtime>::events())
 	}
 
-	/// If this is a parachain node, it will allow you to signal runtime upgrades to your
-	/// parachain runtime.
-	pub fn give_upgrade_signal(&self, signal: UpgradeGoAhead)
-	where
-		<<T::Block as BlockT>::Header as Header>::Number: num_traits::cast::AsPrimitive<u32>,
-		T::Runtime: parachain_info::Config,
-	{
-		if let Some(sproof_provider) = &self.parachain_inherent_provider {
-			let para_id =
-				self.with_state(None, || parachain_info::Pallet::<T::Runtime>::parachain_id());
-			let builder = RelayStateSproofBuilder {
-				para_id,
-				upgrade_go_ahead: Some(signal),
-				..Default::default()
-			};
-			sproof_provider.lock().unwrap().update_sproof_builder(builder)
-		}
-	}
-
 	/// Instructs manual seal to seal new, possibly empty blocks.
 	pub async fn seal_blocks(&self, num: usize)
 	where
 		<<T::Block as BlockT>::Header as Header>::Number: num_traits::cast::AsPrimitive<u32>,
-		T::Runtime: parachain_info::Config,
 	{
 		let mut sink = self.manual_seal_command_sink.clone();
 
 		for count in 0..num {
-			if let Some(sproof_provider) = &self.parachain_inherent_provider {
-				let para_id =
-					self.with_state(None, || parachain_info::Pallet::<T::Runtime>::parachain_id());
-				let builder =
-					if let Some(builder) = sproof_provider.lock().unwrap().sproof_builder.take() {
-						RelayStateSproofBuilder { para_id, ..builder }
-					} else {
-						RelayStateSproofBuilder { para_id, ..Default::default() }
-					};
-				sproof_provider.lock().unwrap().update_sproof_builder(builder);
-			}
 			let (sender, future_block) = oneshot::channel();
 			let future = sink.send(EngineCommand::SealNewBlock {
 				create_empty: true,

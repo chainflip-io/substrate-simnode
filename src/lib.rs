@@ -36,12 +36,10 @@ use std::sync::Arc;
 mod client;
 mod host_functions;
 mod node;
-mod sproof;
 
 pub use client::*;
 pub use host_functions::*;
 pub use node::*;
-pub use sproof::*;
 
 /// Type alias for [`sc_service::TFullClient`]
 pub type FullClientFor<C> = TFullClient<
